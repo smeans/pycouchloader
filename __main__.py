@@ -31,16 +31,22 @@ def connect(url):
 
 class CouchFinder(importlib.abc.MetaPathFinder):
     def find_spec(fullname, path, target=None):
+        logging.debug('attempting to load %s: path: %s target: %s' % (fullname, path, target))
         if not fullname in couch_docs:
             name_array = fullname.split('.')
-            if name_array[0] in all_dbs:
-                db = cc[name_array[0]]
-                doc_id = 'module:' + '.'.join(name_array[1:])
-                if doc_id in db:
-                    couch_docs[fullname] = db[doc_id]
+            db_name = 'pyc_%s' % name_array[0]
+            if db_name in all_dbs:
+                db = cc[db_name]
+                matches = [n for n in [''.join(['pycode:', fullname, s]) for s in ['', '.__init__', '.__main__']] if n in db]
+                if matches:
+                    couch_docs[fullname] = db[matches[0]]
+                else:
+                    logging.warn('unable to load module %s' % fullname)
 
         if fullname in couch_docs:
-            return importlib.machinery.ModuleSpec(fullname, CouchLoader())
+            is_package = couch_docs[fullname]['_id'].endswith('__init__')
+
+            return importlib.machinery.ModuleSpec(fullname, CouchLoader(), is_package=is_package)
 
         return None
 
@@ -49,12 +55,22 @@ class CouchFinder(importlib.abc.MetaPathFinder):
         couch_docs = {}
 
 class CouchLoader(importlib.abc.SourceLoader):
+    def is_package(self, fullname):
+        name_array = fullname.split('.')
+        db_name = 'pyc_%s' % name_array[0]
+        db = cc[db_name]
+
+        f = ''.join([fullname, '.__init__']) in db
+        logging.debug('is_package: %s' % fullname)
+
+        return f
+
     def get_filename(self, fullname):
         return 'x-couchloader:%s' % fullname
 
     def get_data(self, path):
         protocol, fullname = path.split(':')
-        return couch_docs['pycode:%s' % fullname]['current']['source']
+        return couch_docs[fullname]['current']['source']
 
 sys.meta_path.append(CouchFinder)
 
@@ -108,7 +124,7 @@ def sync_folder(db, path):
 def handle_sync(args):
     for n in os.listdir(args.sync):
         if os.path.isdir(n):
-            db_name = '%s_%s' % (args.dbprefix, n)
+            db_name = 'pyc_%s' % n
 
             if db_name in all_dbs:
                 logging.info('syncing package %s' % n)
@@ -117,7 +133,6 @@ def handle_sync(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CouchDB Python class loader.')
     parser.add_argument('class_name', nargs='*', help='class names to be loaded')
-    parser.add_argument('--dbprefix', default='pyc', help='code database prefix')
     parser.add_argument('--debug', action='store_const', const=True, help='enable debug logging')
     parser.add_argument('--url', default='http://localhost:5984', help='target CouchDB URL')
     parser.add_argument('--sync')
